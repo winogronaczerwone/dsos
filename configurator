@@ -300,20 +300,6 @@ root_hash=$(printf '%s' "$root_password" | openssl passwd -6 -stdin)
 [[ -n "$root_hash" ]] || abort "Nie udało się zahashować hasła"
 
 clear
-step "Hasło roota"
-gum style --border double --padding "1 2" --foreground 3 "$root_password"
-echo
-say --foreground 8 "Zapisz je teraz. Nie będzie pokazane ponownie."
-echo
-
-save_pw=false
-gum confirm --affirmative "Tak, zapisz" --negative "Nie" \
-  "Zapisać hasło do /root/root-password.txt na docelowym systemie?" && save_pw=true
-
-confirm
-
-write_configs
-
 if $DRY; then
   step "[dry-run] user_configuration.json"
   cat "$WORKDIR/user_configuration.json"
