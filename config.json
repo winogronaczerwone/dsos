@@ -1,0 +1,33 @@
+{
+  "additional-repositories": ["multilib"],
+  "archinstall-language": "Polish",
+  "audio_config": "pulseaudio",
+  "bootloader_config": {
+    "bootloader": "limine",
+    "uki": false,
+    "removable": false
+  },
+  "bootloader": "limine",
+  "debug": false,
+  "hostname": "archlinux",
+  "kernels": [
+    "linux"
+  ],
+  "network_config": {},
+  "no_pkg_lookups": false,
+  "ntp": true,
+  "offline": false,
+  "packages": ["gnome-initial-setup","gnome","prismlauncher"],
+  "parallel downloads": 0,
+  "profile_config": null,
+  "save_config": null,
+  "script": "guided",
+  "silent": false,
+  "swap": true,
+  "timezone": "UTC",
+  "version": "2.6.0",
+  "skip": ["audio", "keyboard", "locale"],
+  "custom-commands": [
+    "systemctl enable NetworkManager"
+  ]
+}
