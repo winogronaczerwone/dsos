@@ -1,0 +1,349 @@
+#!/bin/bash
+#
+# amos-r-install.sh — minimalny instalator Arch + GNOME
+#
+#   * wybór dysku (gum)
+#   * losowe hasło roota (generowane, wyświetlane, opcjonalnie zapisywane)
+#   * archinstall w trybie nieinteraktywnym (partycjonowanie przez default_layout)
+#   * GNOME + gnome-initial-setup + gdm
+#   * brak użytkownika => OOBE przy pierwszym boocie
+#
+# Użycie:  ./amos-r-install.sh [dry]
+#
+
+set -uo pipefail
+
+# ---- ustawienia domyślne (nadpisywalne przez env) ----------------------
+HOSTNAME_DEFAULT="${HOSTNAME_DEFAULT:-archlinux}"
+TIMEZONE_DEFAULT="${TIMEZONE_DEFAULT:-Europe/Warsaw}"
+KEYBOARD_DEFAULT="${KEYBOARD_DEFAULT:-pl}"
+LOCALE_DEFAULT="${LOCALE_DEFAULT:-pl_PL.UTF-8}"
+BOOTLOADER="${BOOTLOADER:-Systemd-boot}"   # "Systemd-boot" | "Grub" | "Limine"
+KERNEL="${KERNEL:-linux}"
+ARCHINSTALL_VERSION="${ARCHINSTALL_VERSION:-3.0.9}"
+WORKDIR="${WORKDIR:-/tmp/amos-r}"
+
+DRY=false
+[[ "${1:-}" == "dry" ]] && DRY=true
+
+# ---- pomocnicze --------------------------------------------------------
+abort() { gum style --foreground 1 "${1:-Przerwano}"; echo; exit 1; }
+step()  { echo; gum style --foreground 2 --bold "$1"; echo; }
+say()   { gum style "$@"; }
+
+require() {
+  local c
+  for c in "$@"; do
+    command -v "$c" >/dev/null 2>&1 || abort "Brak wymaganego polecenia: $c"
+  done
+}
+
+require gum openssl lsblk archinstall
+
+# ---- losowe hasło ------------------------------------------------------
+gen_password() {
+  # 24 znaki alfanumeryczne — bezpieczne w JSON, shellu i crypt(3).
+  # `|| true` bo pipefail + SIGPIPE z `head` zwróciłoby błąd.
+  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 24 || true
+}
+
+# ---- wybór dysku (adaptacja z omarchy-iso-configurator) ----------------
+get_disk_info() {
+  local device="$1" size vendor model label part_summary display
+  size=$(lsblk -dno SIZE "$device" 2>/dev/null)
+  vendor=$(lsblk -dno VENDOR "$device" 2>/dev/null | sed 's/ *$//')
+  model=$(lsblk -dno MODEL "$device" 2>/dev/null | sed 's/ *$//')
+
+  label=""
+  if [[ -n $vendor && -n $model ]]; then
+    [[ $model == *$vendor* ]] && label="$model" || label="$vendor $model"
+  elif [[ -n $model ]]; then
+    label="$model"
+  elif [[ -n $vendor ]]; then
+    label="$vendor"
+  fi
+
+  display="$device"
+  [[ -n $size ]]  && display="$display ($size)"
+  [[ -n $label ]] && display="$display - $label"
+
+  part_summary=$(lsblk -nro TYPE,NAME,FSTYPE,MOUNTPOINT "$device" 2>/dev/null | \
+    awk '$1=="part" { printf "%s%s%s", s, ($3==""?"unknown":$3), ($4==""?"":"("$4")"); s=", " }')
+  [[ -n $part_summary ]] && display+=" [$part_summary]"
+
+  echo "$display"
+}
+
+get_root_disk() {
+  local device="$1" parent
+  [[ -n $device ]] || return 1
+  device=$(readlink -f "$device" 2>/dev/null || printf "%s\n" "$device")
+  while true; do
+    parent=$(lsblk -dno PKNAME "$device" 2>/dev/null | tail -n1)
+    [[ -n $parent ]] || break
+    device="/dev/$parent"
+  done
+  [[ $(lsblk -dno TYPE "$device" 2>/dev/null) == "disk" ]] && printf "%s\n" "$device"
+}
+
+disk_form() {
+  step "Wybierz dysk docelowy"
+
+  local boot_source exclude_disk available_disks disk_options device
+  boot_source=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+  exclude_disk=$(get_root_disk "$boot_source")
+
+  available_disks=$(
+    lsblk -dpno NAME,TYPE |
+      awk '$2=="disk"{print $1}' |
+      grep -E '/dev/(sd|hd|vd|nvme|mmcblk|xv)' |
+      { if [[ -n "$exclude_disk" ]]; then grep -Fvx "$exclude_disk"; else cat; fi; }
+  )
+
+  [[ -n "$available_disks" ]] || abort "Nie znaleziono żadnego dysku do instalacji"
+
+  disk_options=""
+  while IFS= read -r device; do
+    [[ -n "$device" ]] && disk_options+="$(get_disk_info "$device")"$'\n'
+  done <<<"$available_disks"
+
+  local selected
+  selected=$(echo "$disk_options" | gum choose --header "Dysk do sformatowania") || abort
+  disk=$(echo "$selected" | awk '{print $1}')
+}
+
+# ---- zebranie danych ---------------------------------------------------
+collect() {
+  disk_form
+
+  step "Konfiguracja"
+  hostname=$(gum input --header "Hostname" --value "$HOSTNAME_DEFAULT" --placeholder "$HOSTNAME_DEFAULT")
+  hostname="${hostname:-$HOSTNAME_DEFAULT}"
+
+  timezone=$(gum input --header "Strefa czasowa" --value "$TIMEZONE_DEFAULT" --placeholder "$TIMEZONE_DEFAULT")
+  timezone="${timezone:-$TIMEZONE_DEFAULT}"
+
+  keyboard=$(gum input --header "Układ klawiatury" --value "$KEYBOARD_DEFAULT" --placeholder "$KEYBOARD_DEFAULT")
+  keyboard="${keyboard:-$KEYBOARD_DEFAULT}"
+}
+
+# ---- potwierdzenie -----------------------------------------------------
+confirm() {
+  step "Podsumowanie"
+  echo -e "Pole,Wartość
+Dysk,$disk
+Hostname,$hostname
+Strefa,$timezone
+Klawiatura,$keyboard
+Bootloader,$BOOTLOADER
+Pakiety,gnome + gnome-initial-setup + gdm" | gum table -s "," -p
+  echo
+  say --foreground 1 "Cały dysk $disk zostanie wyczyszczony. Bez odwrotu."
+  echo
+  gum confirm --affirmative "Tak, instaluj" --negative "Nie, przerwij" "Kontynuować?" || abort
+}
+
+# ---- generowanie plików archinstall ------------------------------------
+write_configs() {
+  mkdir -p "$WORKDIR"
+
+  local disk_size mib gib disk_size_in_mib gpt_backup_reserve
+  local boot_partition_start boot_partition_size
+  local main_partition_start main_partition_size
+
+  disk_size=$(lsblk -bdno SIZE "$disk")
+  mib=$((1024 * 1024)); gib=$((mib * 1024))
+  disk_size_in_mib=$((disk_size / mib * mib))
+
+  gpt_backup_reserve=$((mib))
+  boot_partition_start=$((mib))
+  boot_partition_size=$((2 * gib))
+  main_partition_start=$((boot_partition_size + boot_partition_start))
+  main_partition_size=$((disk_size_in_mib - main_partition_start - gpt_backup_reserve))
+
+  if (( main_partition_size <= 0 )); then
+    abort "Dysk $disk jest za mały (minimum ~4 GiB)"
+  fi
+
+  # obj_id: Omarchy hardcoduje te same UUID-y przy każdym installu —
+  # wymóg jest tylko taki, żeby disk_config i disk_encryption się zgadzały.
+  cat >"$WORKDIR/user_configuration.json" <<-_EOF_
+{
+    "app_config": null,
+    "archinstall-language": "English",
+    "auth_config": {},
+    "audio_config": { "audio": "pipewire" },
+    "bootloader_config": { "bootloader": "$BOOTLOADER", "uki": false, "removable": false },
+    "custom_commands": [
+        "systemctl enable gdm",
+        "systemctl enable NetworkManager"
+    ],
+    "disk_config": {
+        "config_type": "default_layout",
+        "device_modifications": [
+            {
+                "device": "$disk",
+                "partitions": [
+                    {
+                        "btrfs": [],
+                        "dev_path": null,
+                        "flags": [ "boot", "esp" ],
+                        "fs_type": "fat32",
+                        "mount_options": [],
+                        "mountpoint": "/boot",
+                        "obj_id": "ea21d3f2-82bb-49cc-ab5d-6f81ae94e18d",
+                        "size": {
+                            "sector_size": { "unit": "B", "value": 512 },
+                            "unit": "B",
+                            "value": $boot_partition_size
+                        },
+                        "start": {
+                            "sector_size": { "unit": "B", "value": 512 },
+                            "unit": "B",
+                            "value": $boot_partition_start
+                        },
+                        "status": "create",
+                        "type": "primary"
+                    },
+                    {
+                        "btrfs": [
+                            { "mountpoint": "/", "name": "@" },
+                            { "mountpoint": "/home", "name": "@home" },
+                            { "mountpoint": "/var/log", "name": "@log" },
+                            { "mountpoint": "/var/cache/pacman/pkg", "name": "@pkg" }
+                        ],
+                        "dev_path": null,
+                        "flags": [],
+                        "fs_type": "btrfs",
+                        "mount_options": [ "compress=zstd" ],
+                        "mountpoint": null,
+                        "obj_id": "8c2c2b92-1070-455d-b76a-56263bab24aa",
+                        "size": {
+                            "sector_size": { "unit": "B", "value": 512 },
+                            "unit": "B",
+                            "value": $main_partition_size
+                        },
+                        "start": {
+                            "sector_size": { "unit": "B", "value": 512 },
+                            "unit": "B",
+                            "value": $main_partition_start
+                        },
+                        "status": "create",
+                        "type": "primary"
+                    }
+                ],
+                "wipe": true
+            }
+        ]
+    },
+    "hostname": "$hostname",
+    "kernels": [ "$KERNEL" ],
+    "network_config": { "type": "iso" },
+    "ntp": true,
+    "parallel_downloads": 8,
+    "script": null,
+    "services": [],
+    "swap": true,
+    "timezone": "$timezone",
+    "locale_config": {
+        "kb_layout": "$keyboard",
+        "sys_enc": "UTF-8",
+        "sys_lang": "$LOCALE_DEFAULT"
+    },
+    "mirror_config": {
+        "custom_repositories": [],
+        "custom_servers": [],
+        "mirror_regions": {},
+        "optional_repositories": []
+    },
+    "packages": [
+        "gnome",
+        "gnome-initial-setup",
+        "networkmanager"
+    ],
+    "profile_config": {
+        "gfx_driver": null,
+        "greeter": null,
+        "profile": {}
+    },
+    "version": "$ARCHINSTALL_VERSION"
+}
+_EOF_
+
+  # users: [] => OOBE tworzy pierwszego użytkownika przy pierwszym boocie.
+  # root_enc_password: hash SHA-512 crypt, nie plaintext.
+  cat >"$WORKDIR/user_credentials.json" <<-_EOF_
+{
+    "root_enc_password": "$root_hash",
+    "users": []
+}
+_EOF_
+
+  chmod 700 "$WORKDIR"
+  chmod 600 "$WORKDIR"/*.json
+}
+
+# ---- main --------------------------------------------------------------
+disk=""
+hostname=""
+timezone=""
+keyboard=""
+root_password=""
+root_hash=""
+
+collect
+
+step "Generuję hasło roota"
+root_password=$(gen_password)
+[[ ${#root_password} -eq 24 ]] || abort "Nie udało się wygenerować hasła"
+root_hash=$(printf '%s' "$root_password" | openssl passwd -6 -stdin)
+[[ -n "$root_hash" ]] || abort "Nie udało się zahashować hasła"
+
+clear
+step "Hasło roota"
+gum style --border double --padding "1 2" --foreground 3 "$root_password"
+echo
+say --foreground 8 "Zapisz je teraz. Nie będzie pokazane ponownie."
+echo
+
+save_pw=false
+gum confirm --affirmative "Tak, zapisz" --negative "Nie" \
+  "Zapisać hasło do /root/root-password.txt na docelowym systemie?" && save_pw=true
+
+confirm
+
+write_configs
+
+if $DRY; then
+  step "[dry-run] user_configuration.json"
+  cat "$WORKDIR/user_configuration.json"
+  step "[dry-run] user_credentials.json"
+  cat "$WORKDIR/user_credentials.json"
+  rm -rf "$WORKDIR"
+  exit 0
+fi
+
+step "Uruchamiam archinstall"
+archinstall --config "$WORKDIR/user_configuration.json" \
+            --creds  "$WORKDIR/user_credentials.json" \
+            --silent
+rc=$?
+
+if (( rc != 0 )); then
+  say --foreground 1 "archinstall zakończył się błędem (kod $rc)"
+  say "Log: /var/log/archinstall/install.log"
+  exit "$rc"
+fi
+
+# Hasło zapisujemy PO instalacji, żeby nie trafiło do configu archinstalla.
+if $save_pw; then
+  printf '%s\n' "$root_password" >/mnt/root/root-password.txt
+  chmod 600 /mnt/root/root-password.txt
+  say "Hasło zapisane w /root/root-password.txt (usuń po pierwszym logowaniu)."
+fi
+
+rm -rf "$WORKDIR"
+
+step "Gotowe"
+say "Po restarcie GDM uruchomi gnome-initial-setup (brak użytkowników)."
+say --foreground 8 "Log: /var/log/archinstall/install.log"
