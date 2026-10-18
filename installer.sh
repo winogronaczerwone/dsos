@@ -3,6 +3,12 @@ say() {
   gum style --padding "0 0 0 $PADDING_LEFT" "$@"
 }
 
+ESCAPE() {
+    echo "${1//$/\\$}"
+}
+
+pacman -Sy --noconfirm whois gum
+
 clear
 say "Welcome to the installer!"
 
@@ -59,7 +65,7 @@ PSWDHASH=
 
 cat <<EOF>user_credentials.json
 {
-    "root_enc_password": "$(mkpasswd -m yescrypt "${PASSWORD}")",
+    "root_enc_password": "$(ESCAPE $(mkpasswd -m yescrypt "${PASSWORD}"))",
 }
 EOF
 
