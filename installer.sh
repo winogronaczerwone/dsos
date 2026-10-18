@@ -55,11 +55,11 @@ PASSWORD=$(gum input --password)
 }
 EOF
 
-PSWDHASH=mkpasswd -m yescrypt "${PASSWORD}"
+PSWDHASH=
 
 cat <<EOF>user_credentials.json
 {
-    "root_enc_password": "${PSWDHASH}",
+    "root_enc_password": "$(mkpasswd -m yescrypt "${PASSWORD}")",
 }
 EOF
 
