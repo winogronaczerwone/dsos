@@ -35,27 +35,93 @@ PASSWORD=$(gum input --password)
   "swap": true,
   "timezone": "UTC",
   "custom-commands": ["systemctl enable NetworkManager", "systemctl enable gdm"],
-  "disks": [
-    {
-      "device": "${DISK}",
-      "wipe": true,
-      "partitions": [
-        {
-          "size": 512,
-          "filesystem": "fat32",
-          "mountpoint": "/boot"
-        },
-        {
-          "size": 4192,
-          "filesystem": "swap",
-          "mountpoint": "swap"
-            },
-        {
-          "size": 0,
-          "filesystem": "btrfs",
-          "mountpoint": "/"
-        }
-      ]
+  "network_config": {
+    "type": "iso"
+  },
+          "device_modifications": [
+            {
+                "device": "${DISK}",
+                "partitions": [
+                    {
+                        "btrfs": [],
+                        "dev_path": null,
+                        "flags": [
+                            "boot",
+                            "esp"
+                        ],
+                        "fs_type": "fat32",
+                        "mount_options": [],
+                        "mountpoint": "/boot",
+                        "obj_id": "96e5fc66-5956-418b-a8cc-b08037714215",
+                        "size": {
+                            "sector_size": {
+                                "unit": "B",
+                                "value": 512
+                            },
+                            "unit": "GiB",
+                            "value": 1
+                        },
+                        "start": {
+                            "sector_size": {
+                                "unit": "B",
+                                "value": 512
+                            },
+                            "unit": "MiB",
+                            "value": 1
+                        },
+                        "status": "create",
+                        "type": "primary"
+                    },
+                    {
+                        "btrfs": [
+                            {
+                                "mountpoint": "/",
+                                "name": "@"
+                            },
+                            {
+                                "mountpoint": "/home",
+                                "name": "@home"
+                            },
+                            {
+                                "mountpoint": "/var/log",
+                                "name": "@log"
+                            },
+                            {
+                                "mountpoint": "/var/cache/pacman/pkg",
+                                "name": "@pkg"
+                            }
+                        ],
+                        "dev_path": null,
+                        "flags": [],
+                        "fs_type": "btrfs",
+                        "mount_options": [
+                            "compress=zstd"
+                        ],
+                        "mountpoint": null,
+                        "obj_id": "9887aad9-4abc-468c-bb01-26f3fec9fc11",
+                        "size": {
+                            "sector_size": {
+                                "unit": "B",
+                                "value": 512
+                            },
+                            "unit": "B",
+                            "value": 1023133351936
+                        },
+                        "start": {
+                            "sector_size": {
+                                "unit": "B",
+                                "value": 512
+                            },
+                            "unit": "B",
+                            "value": 1074790400
+                        },
+                        "status": "create",
+                        "type": "primary"
+                    }
+                ],
+                "wipe": true
+            }
+        ],
     }
   ]
 }
