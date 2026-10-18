@@ -6,12 +6,11 @@ say() {
 clear
 say "Welcome to the installer!"
 
-lsblk -o NAME,SIZE,MODEL,TYPE,TRAN
 say "Please select the disk you want to install Arch Linux on:"
 DISK=$(gum choose $(lsblk -dno NAME | grep -v "loop" | grep -v "sr0" | sed 's/^/\/dev\//'))
-say "You have selected $DISK. This will erase all data on the disk. Are you sure you want to continue?"
-gum confirm "Are you sure you want to continue?" || exit 1
 
+say "Please select the disk encryption and root password:"
+PASSWORD=$(gum input --password)
 
   cat <<EOF>user_configuration.json
 {
@@ -55,5 +54,14 @@ gum confirm "Are you sure you want to continue?" || exit 1
   ]
 }
 EOF
+
+PSWDHASH=mkpasswd -m yescrypt "${PASSWORD}"
+
+cat <<EOF>user_credentials.json
+{
+    "root_enc_password": "${PSWDHASH}",
+}
+EOF
+
 
 gum confirm "Do you want to start the installation?" && archinstall --config user_configuration.json --silent
