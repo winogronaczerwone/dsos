@@ -37,7 +37,7 @@ PASSWORD=$(gum input --password)
   "custom-commands": ["systemctl enable NetworkManager", "systemctl enable gdm"],
   "disks": [
     {
-      "device": ${DISK},
+      "device": "${DISK}",
       "wipe": true,
       "partitions": [
         {
@@ -60,8 +60,6 @@ PASSWORD=$(gum input --password)
   ]
 }
 EOF
-
-PSWDHASH=
 
 cat <<EOF>user_credentials.json
 {
